@@ -1,0 +1,89 @@
+---
+- name: Full MicroK8s + ArgoCD setup
+  hosts: ubuntu
+  become: yes
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: Ensure MicroK8s is installed
+      snap:
+        name: microk8s
+        classic: yes
+        state: present
+
+    - name: Add ubuntu user to microk8s and docker groups
+      user:
+        name: "{{ ansible_user }}"
+        groups: microk8s,docker
+        append: yes
+
+    - name: Enable core MicroK8s addons
+      command: microk8s enable dns storage helm3
+
+    - name: Enable MetalLB with IP range
+      command: microk8s enable metallb:{{ metallb_range }}
+
+    - name: Enable community and ArgoCD
+      command: microk8s enable community && microk8s enable argocd
+
+    - name: Wait for ArgoCD server to start
+      command: microk8s kubectl wait --for=condition=available --timeout=300s deployment/argocd-server -n argocd
+
+    - name: Clone GitHub app repo
+      git:
+        repo: "{{ github_repo }}"
+        dest: /home/{{ ansible_user }}/tasklist-app
+        version: main
+        force: yes
+
+    - name: Create app namespace
+      command: microk8s kubectl create namespace {{ app_namespace }}
+      ignore_errors: yes
+
+    - name: Create DB credentials secret
+      shell: |
+        microk8s kubectl -n {{ app_namespace }} delete secret db-credentials --ignore-not-found=true
+        microk8s kubectl -n {{ app_namespace }} create secret generic db-credentials \
+          --from-literal=DB_USERNAME={{ db_user }} \
+          --from-literal=DB_PASSWORD={{ db_password }} \
+          --from-literal=DB_HOST={{ db_host }} \
+          --from-literal=DB_NAME={{ db_name }}
+      environment:
+        KUBECONFIG: /var/snap/microk8s/current/credentials/client.config
+
+    - name: Apply K8s manifests (deployment, service, etc.)
+      command: microk8s kubectl apply -f /home/{{ ansible_user }}/tasklist-app/k8s/ -n {{ app_namespace }}
+      ignore_errors: yes
+
+    - name: Expose application service on port {{ app_service_port }}
+      shell: |
+        microk8s kubectl patch svc tasklist -n {{ app_namespace }} \
+          -p '{"spec": {"type": "NodePort", "ports": [{"port": {{ app_service_port }}, "targetPort": 8080, "nodePort": 32002}]}}'
+
+    - name: Port-forward application to localhost:{{ app_service_port }}
+      async: 3600
+      poll: 0
+      shell: |
+        nohup microk8s kubectl port-forward svc/tasklist -n {{ app_namespace }} {{ app_service_port }}:8080 >/dev/null 2>&1 &
+
+    - name: Port-forward ArgoCD Web UI to localhost:9090
+      async: 3600
+      poll: 0
+      shell: |
+        nohup microk8s kubectl port-forward svc/argo-cd-argocd-server -n argocd 9090:443 >/dev/null 2>&1 &
+
+    - name: Display URLs
+      debug:
+        msg:
+          - "ArgoCD UI: https://localhost:9090"
+          - "Application: http://localhost:{{ app_service_port }}"
+
+    - name: Print ArgoCD admin password
+      command: microk8s kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.password}" | base64 --decode
+      register: argocd_password
+      changed_when: false
+
+    - name: Show ArgoCD login info
+      debug:
+        msg: "Login with username 'admin' and password '{{ argocd_password.stdout }}'"
