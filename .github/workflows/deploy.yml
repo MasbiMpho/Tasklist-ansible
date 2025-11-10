@@ -1,0 +1,38 @@
+name: Deploy Infrastructure (Local)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Ansible & dependencies
+        run: sudo apt update && sudo apt install -y ansible
+
+      - name: Generate vars.yml from GitHub Secrets
+        run: |
+          cat <<EOF > vars.yml
+          github_repo: "${{ secrets.REPO_URL }}"
+          app_namespace: "${{ secrets.APP_NAMESPACE }}"
+          app_service_port: "${{ secrets.APP_SERVICE_PORT }}"
+          argo_ui_port: "${{ secrets.ARGOCD_UI_PORT }}"
+          db_username: "${{ secrets.DB_USER }}"
+          db_password: "${{ secrets.DB_PASSWORD }}"
+          metallb_range: "${{ secrets.METALLB_RANGE }}"
+          EOF
+
+      - name: Create local inventory file
+        run: |
+          echo "[local]" > inventory.ini
+          echo "localhost ansible_connection=local" >> inventory.ini
+
+      - name: Run Ansible playbook
+        run: ansible-playbook -i inventory.ini playbook.yml
