@@ -1,0 +1,13 @@
+ansible_user: ubuntu
+
+github_repo: "https://github.com/MasbiMpho/Tasklist-argocd.git"
+
+app_namespace: default
+app_service_port: 8082
+
+db_user: postgres
+db_password: admin
+db_host: 10.255.255.254
+db_name: taskdb
+
+metallb_range: 192.168.49.1-192.168.49.100
